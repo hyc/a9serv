@@ -1,0 +1,27 @@
+This is a quick and dirty HTTP streaming server for the A9 wifi mini-camera.
+It's based off the javascript code in https://github.com/datenstau/A9_PPPP.git
+but rewritten in C with no external dependencies. I just couldn't stomach the
+idea of installing node.s, npm, and all its associated horrors for such a
+simple task.
+
+The code in the A9_PPPP repo contains a more general purpose library that
+lets you issue each of the commands the camera recognizes, retrieve audio
+as well as video, etc. This program only retrieves the MJPG video stream,
+suitable for feeding to `motion` for motion detection monitoring. If you need
+those other features, you'll have to add them yourself or just use the
+original A9_PPPP code.
+
+To build:
+	gcc -o pppp pppp.c
+
+To run:
+	./pppp
+
+By default it listens for 1 HTTP connection on port 3000, and sends a UDP
+packet to the broadcast address to try to find a camera. You can use the
+options -b, -l, and -p to set the UDP target address, local address, and
+local HTTP port, respectively. I use -b 192.168.1.255 on my own LAN, or
+just -b 192.168.1.xxx when I know the camera's address is xxx.
+
+  -- hyc 2024-03-17  Happy St Patrick's Day
+
