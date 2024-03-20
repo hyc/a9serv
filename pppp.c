@@ -264,7 +264,7 @@ int send_video()
 	sendCMD(&cmd);
 
 	if ((len = timeread(udp, &pkt, WAITTIME)) == 0) {
-		DEBUG("%s", "send video CMD timed out\n");
+		printf("send video CMD timed out\n");
 		rc = -1;
 		goto leave;
 	}
@@ -273,7 +273,7 @@ int send_video()
 		pkt.mv_size = sizeof(pktbuf);
 		len = timeread(udp, &pkt, WAITTIME);
 		if (len == 0) {
-			DEBUG("%s", "timed out reading camera data\n");
+			printf("timed out reading camera data\n");
 			rc = -2;
 			goto leave;
 		}
@@ -349,7 +349,10 @@ int send_video()
 				for (i=0; i<MAXFRAGS; i++)
 					if (!fragarray[i].iov_len)
 						break;
-				!writev(client, fragspace, i+1);
+				if (writev(client, fragspace, i+1) < 0) {
+					perror("writev to client");
+					break;
+				}
 				for (i=0; i<MAXFRAGS; i++)
 					fragarray[i].iov_len = 0;
 			}
@@ -498,5 +501,6 @@ int main(int argc, char *argv[])
 	fragspace[0].iov_base = (void *)vidpart;
 	fragspace[0].iov_len = sizeof(vidpart)-1;
 	signal(SIGINT, sighandle);
+	signal(SIGTERM, sighandle);
 	startup();
 }
