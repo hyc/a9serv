@@ -282,7 +282,9 @@ int send_video()
 			int acks = 0;
 			if (nfrags) {
 				int j = nfrags;
-				for (i=0; i<MAXFRAGS; i++) {
+				int ix;
+
+				for (i=0, ix=baseindex; i<MAXFRAGS; i++, ix++) {
 					if (fragarray[i].iov_len) {
 						if (!fragack[i]) {
 							repbuf[0] = MCAM;
@@ -293,9 +295,11 @@ int send_video()
 							repbuf[5] = channel;
 							repbuf[6] = 0;
 							repbuf[7] = 1;
-							repbuf[8] = (i+baseindex) >> 8;
-							repbuf[9] = (i+baseindex) & 0xff;
+							repbuf[8] = ix >> 8;
+							repbuf[9] = ix & 0xff;
 							sendEnc(&rep);
+							usleep(100);
+							resend(&rep);
 							fragack[i] = 1;
 							acks++;
 						}
@@ -339,6 +343,8 @@ int send_video()
 				if (index < previndex || (index > 65400 && previndex < 32)) {
 					DEBUG("index: %d, previndex: %d, skipping\n", index, previndex);
 					sendEnc(&rep);
+					usleep(100);
+					resend(&rep);
 					continue;
 				}
 				datasum = 0;
@@ -373,39 +379,43 @@ int send_video()
 			if (!fragarray[slotindex].iov_len) {
 				datasum += len;
 				nfrags++;
-			}
-			if (datasum >= framelen) {
-				unsigned short j;
-				for (j=baseindex; j<=index; j++) {
-					if (fragack[j-baseindex])
-						continue;
-					fragack[j-baseindex] = 1;
-					repbuf[0] = MCAM;
-					repbuf[1] = MSG_DRW_ACK;
-					repbuf[2] = 0;
-					repbuf[3] = 6;
-					repbuf[4] = MDRW;
-					repbuf[5] = channel;
-					repbuf[6] = 0;
-					repbuf[7] = 1;
-					repbuf[8] = j >> 8;
-					repbuf[9] = j & 0xff;
-					sendEnc(&rep);
-				}
-			}
-
-			if (!fragarray[slotindex].iov_len){
 				DEBUG("index: %d, slotindex: %d, datasum %d\n", index, slotindex, datasum);
 				memcpy(fragarray[slotindex].iov_base, pktbuf+pktoff, len);
 				fragarray[slotindex].iov_len = len;
 			}
 
 			if (datasum >= framelen) {
+				int j = nfrags;
+				int ix;
 				/* frame is complete */
 				DEBUG("index: %d, datasum: %d, framelen: %d, writing http\n", index, datasum, framelen);
 				if (writev(client, fragspace, nfrags+1) < 0) {
 					perror("writev to client");
 					break;
+				}
+
+				for (i=0, ix=baseindex; i<MAXFRAGS; i++, ix++) {
+					if (fragarray[i].iov_len) {
+						if (!fragack[i]) {
+							repbuf[0] = MCAM;
+							repbuf[1] = MSG_DRW_ACK;
+							repbuf[2] = 0;
+							repbuf[3] = 6;
+							repbuf[4] = MDRW;
+							repbuf[5] = channel;
+							repbuf[6] = 0;
+							repbuf[7] = 1;
+							repbuf[8] = ix >> 8;
+							repbuf[9] = ix & 0xff;
+							sendEnc(&rep);
+							usleep(100);
+							resend(&rep);
+							fragack[i] = 1;
+						}
+						j--;
+						if (!j)
+							break;
+					}
 				}
 			}
 			pkt.mv_size = sizeof(pktbuf);
