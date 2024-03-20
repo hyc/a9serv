@@ -49,6 +49,7 @@ static void init_MsgTypeText() {
 char fragbuf[MAXFRAGS * FRAGSPACE];
 struct iovec fragspace[MAXFRAGS+1];
 struct iovec *fragarray = &fragspace[1];
+int fragack[MAXFRAGS];
 
 int udp;
 int http;
@@ -62,7 +63,7 @@ struct sockaddr_in *ilocal = (struct sockaddr_in *)&local;
 struct sockaddr_in *ibcast = (struct sockaddr_in *)&bcast;
 struct sockaddr_in *icamera = (struct sockaddr_in *)&camera;
 
-#if 0
+#ifdef DO_DEBUG
 #define DEBUG(x, ...)	fprintf(stderr, (x), __VA_ARGS__)
 #else
 #define DEBUG(x, ...)
@@ -72,7 +73,8 @@ static const char probe[] = {0x2c, 0xba, 0x5f, 0x5d};	/* MSG_LAN_SEARCH, encrypt
 #define PROBE_PORT	32108
 #define HTTP_PORT	3000
 
-#define WAITTIME	500000	/* 500 msec */
+#define CMDWAIT	500000	/* 500 msec */
+#define VIDWAIT 800	/* 800 usec */
 
 int timeread(int fd, myval *val, int timeout)
 {
@@ -98,7 +100,7 @@ int timerecv(int fd, myval *val, struct sockaddr *from, socklen_t *fromlen)
 	int i;
 
 	tv.tv_sec = 0;
-	tv.tv_usec = WAITTIME;
+	tv.tv_usec = CMDWAIT;
 	FD_ZERO(&infds);
 	FD_SET(fd, &infds);
 	i = select(fd+1, &infds, NULL, NULL, &tv);
@@ -223,7 +225,7 @@ int connect_camera()
 		}
 		DEBUG("%s", "sent MSG_PUNCH reply\n");
 		pktval.mv_size = sizeof(pktbuf);
-		if ((len = timeread(udp, &pktval, WAITTIME)) == 0) {
+		if ((len = timeread(udp, &pktval, CMDWAIT)) == 0) {
 			DEBUG("%s", "timed out\n");
 			continue;
 		}
@@ -253,17 +255,21 @@ int send_video()
 	unsigned char pktbuf[1280];
 	myval cmd = {sizeof(sendvid1)-1, (char *)sendvid1};
 	myval pkt = {sizeof(pktbuf), pktbuf};
+	char repbuf[10] = {MCAM, MSG_DRW_ACK, 0, 6, MDRW};
+	myval rep = {sizeof(repbuf), repbuf};
 	int i, len;
 	int framelen;
-	int baseindex;
+	int baseindex = 0;
 	int slotindex;
 	int datasum;
+	int channel = 0;
+	int nfrags = 0, ntimeout = 0;
 	int rc = 0;
 	unsigned short index, previndex = 0xffff;
 
 	sendCMD(&cmd);
 
-	if ((len = timeread(udp, &pkt, WAITTIME)) == 0) {
+	if ((len = timeread(udp, &pkt, CMDWAIT)) == 0) {
 		printf("send video CMD timed out\n");
 		rc = -1;
 		goto leave;
@@ -271,23 +277,58 @@ int send_video()
 
 	while(1) {
 		pkt.mv_size = sizeof(pktbuf);
-		len = timeread(udp, &pkt, WAITTIME);
+		len = timeread(udp, &pkt, VIDWAIT);
 		if (len == 0) {
-			printf("timed out reading camera data\n");
-			rc = -2;
-			goto leave;
+			int acks = 0;
+			if (nfrags) {
+				int j = nfrags;
+				for (i=0; i<MAXFRAGS; i++) {
+					if (fragarray[i].iov_len) {
+						if (!fragack[i]) {
+							repbuf[0] = MCAM;
+							repbuf[1] = MSG_DRW_ACK;
+							repbuf[2] = 0;
+							repbuf[3] = 6;
+							repbuf[4] = MDRW;
+							repbuf[5] = channel;
+							repbuf[6] = 0;
+							repbuf[7] = 1;
+							repbuf[8] = (i+baseindex) >> 8;
+							repbuf[9] = (i+baseindex) & 0xff;
+							sendEnc(&rep);
+							fragack[i] = 1;
+							acks++;
+						}
+						j--;
+						if (!j)
+							break;
+					}
+				}
+			}
+			if (!acks) {
+				ntimeout++;
+				if (ntimeout > 1000) {
+					printf("timed out reading camera data\n");
+					rc = -2;
+					break;
+				}
+			}
+			continue;
 		}
+		ntimeout = 0;
 		decode(&pkt);
 		if (pktbuf[0] != MCAM)
 			continue;
 		if (pktbuf[1] == MSG_DRW) {
-			char repbuf[10] = {MCAM, MSG_DRW_ACK, 0, 6, MDRW};
-			myval rep = {sizeof(repbuf), repbuf};
-			int channel;
 			int pktoff = 8;
 			len = (pktbuf[2] << 8) | pktbuf[3];
 			channel = pktbuf[5];
 			index = (pktbuf[6] << 8 ) | pktbuf[7];
+			repbuf[0] = MCAM;
+			repbuf[1] = MSG_DRW_ACK;
+			repbuf[2] = 0;
+			repbuf[3] = 6;
+			repbuf[4] = MDRW;
 			repbuf[5] = channel;
 			repbuf[6] = 0;
 			repbuf[7] = 1;
@@ -312,6 +353,11 @@ int send_video()
 				pktoff = 40;
 				len -= 32;
 				DEBUG("index: %d start of frame, framelen %d\n", index, framelen);
+				for (i=0; i<MAXFRAGS; i++) {
+					fragarray[i].iov_len = 0;
+					fragack[i] = 0;
+				}
+				nfrags = 0;
 			}
 			DEBUG("index: %d, pktoff: %d, len: %d\n", index, pktoff, len);
 			slotindex = index - baseindex;
@@ -322,11 +368,18 @@ int send_video()
 				sendEnc(&rep);
 				continue;
 			}
+
 			len -= 4;
-			datasum += len;
+			if (!fragarray[slotindex].iov_len) {
+				datasum += len;
+				nfrags++;
+			}
 			if (datasum >= framelen) {
 				unsigned short j;
-				for (j=baseindex; j!=index; j++) {
+				for (j=baseindex; j<=index; j++) {
+					if (fragack[j-baseindex])
+						continue;
+					fragack[j-baseindex] = 1;
 					repbuf[0] = MCAM;
 					repbuf[1] = MSG_DRW_ACK;
 					repbuf[2] = 0;
@@ -340,21 +393,20 @@ int send_video()
 					sendEnc(&rep);
 				}
 			}
-			DEBUG("index: %d, slotindex: %d, datasum %d\n", index, slotindex, datasum);
-			memcpy(fragarray[slotindex].iov_base, pktbuf+pktoff, len);
-			fragarray[slotindex].iov_len = len;
+
+			if (!fragarray[slotindex].iov_len){
+				DEBUG("index: %d, slotindex: %d, datasum %d\n", index, slotindex, datasum);
+				memcpy(fragarray[slotindex].iov_base, pktbuf+pktoff, len);
+				fragarray[slotindex].iov_len = len;
+			}
+
 			if (datasum >= framelen) {
 				/* frame is complete */
 				DEBUG("index: %d, datasum: %d, framelen: %d, writing http\n", index, datasum, framelen);
-				for (i=0; i<MAXFRAGS; i++)
-					if (!fragarray[i].iov_len)
-						break;
-				if (writev(client, fragspace, i+1) < 0) {
+				if (writev(client, fragspace, nfrags+1) < 0) {
 					perror("writev to client");
 					break;
 				}
-				for (i=0; i<MAXFRAGS; i++)
-					fragarray[i].iov_len = 0;
 			}
 			pkt.mv_size = sizeof(pktbuf);
 			if (timeread(client, &pkt, 0) < 0)
@@ -401,6 +453,11 @@ int startup()
 
 	if ((http = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
 		perror("http socket");
+		exit(1);
+	}
+	len = 1;
+	if (setsockopt(http, SOL_SOCKET, SO_REUSEADDR, (char *)&len, sizeof(len)) < 0) {
+		perror("http setsockopt REUSEADDR");
 		exit(1);
 	}
 	ilocal->sin_family = AF_INET;
