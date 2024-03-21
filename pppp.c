@@ -376,6 +376,11 @@ int send_video()
 			}
 
 			len -= 4;
+			if (len > FRAGSPACE) {	/* data portion should always be less than 1024 bytes */
+				printf("packet length %d is too large, quitting\n", len);
+				rc = -3;
+				break;
+			}
 			if (!fragarray[slotindex].iov_len) {
 				datasum += len;
 				nfrags++;
@@ -391,6 +396,7 @@ int send_video()
 				DEBUG("index: %d, datasum: %d, framelen: %d, writing http\n", index, datasum, framelen);
 				if (writev(client, fragspace, nfrags+1) < 0) {
 					perror("writev to client");
+					rc = -4;
 					break;
 				}
 
