@@ -340,7 +340,7 @@ int send_video()
 			repbuf[9] = index & 0xff;
 
 			if (index != (unsigned short)(previndex + 1)) {
-				if (index < previndex || (index > 65400 && previndex < 32)) {
+				if (index <= previndex || (index > 65400 && previndex < 32)) {
 					DEBUG("index: %d, previndex: %d, skipping\n", index, previndex);
 					sendEnc(&rep);
 					usleep(100);
