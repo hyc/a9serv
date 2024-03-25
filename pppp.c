@@ -270,7 +270,7 @@ int send_video()
 	sendCMD(&cmd);
 
 	if ((len = timeread(udp, &pkt, CMDWAIT)) == 0) {
-		printf("send video CMD timed out\n");
+		fprintf(stderr, "timed out on send video CMD\n");
 		rc = -1;
 		goto leave;
 	}
@@ -312,7 +312,7 @@ int send_video()
 			if (!acks) {
 				ntimeout++;
 				if (ntimeout > 1000) {
-					printf("timed out reading camera data\n");
+					fprintf(stderr, "timed out reading camera data\n");
 					rc = -2;
 					break;
 				}
@@ -377,7 +377,7 @@ int send_video()
 
 			len -= 4;
 			if (len > FRAGSPACE) {	/* data portion should always be less than 1024 bytes */
-				printf("packet length %d is too large, quitting\n", len);
+				fprintf(stderr, "packet length %d is too large, quitting\n", len);
 				rc = -3;
 				break;
 			}
@@ -425,8 +425,10 @@ int send_video()
 				}
 			}
 			pkt.mv_size = sizeof(pktbuf);
-			if (timeread(client, &pkt, 0) < 0)
+			if (timeread(client, &pkt, 0) < 0) {
+				fprintf(stderr, "client closed connection\n");
 				break;
+			}
 		}
 		else if (pktbuf[1] == MSG_ALIVE) {
 			pktbuf[1] = MSG_ALIVE_ACK;
@@ -508,11 +510,9 @@ again:
 			if (!connected)
 				connect_camera(&local, &bcast);
 			!write(client, http200b, sizeof(http200b)-1);
-			if (send_video() == 0) {	/* client disappeared */
-				close(client);
-				printf("HTTP connection closed\n");
-				goto again;
-			}
+			send_video();	/* only returns on failures */
+			close(client);
+			goto again;
 		} else
 		if (!strncmp(inbuf+4, "/ ", 2)) {
 			!write(client, http200, sizeof(http200)-1);
